@@ -1,0 +1,9 @@
+{
+  "SLACK": {
+    "verification_token": "",
+    "bot_access_token": ""
+  },
+  "OTHER": {
+    "clear_notes_pwd": ""
+  }
+}
