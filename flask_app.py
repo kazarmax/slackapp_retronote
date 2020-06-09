@@ -4,7 +4,6 @@ import requests
 import json
 import view_templates
 import retronote_file_manage as rfm
-import os
 
 
 app = Flask(__name__)
@@ -19,7 +18,6 @@ clear_notes_pwd = config['OTHER']['clear_notes_pwd']
 ### Method is invoked when slash command '/retronote' is used
 @app.route('/', methods=['POST'])
 def main():
-
     received_token = request.form['token']
     if received_token != slack_token:
         return abort(400)
@@ -27,7 +25,6 @@ def main():
     response_url = request.form['response_url']
     command_params = request.form['text'].strip().split(" ", 1)
     channel_id = request.form['channel_id']
-    retro_file_name = rfm.get_retrofile_name(channel_id)
 
     ### When user invokes "/retronote help" or "/retronote h"
     if command_params[0] == 'help' or command_params[0] == 'h':
@@ -44,81 +41,53 @@ def main():
 
     ### When user invokes "/retronote list"
     elif command_params[0] == 'list':
-        show_retronotes(response_url, retro_file_name)
+        show_retronotes(response_url, channel_id)
 
     ### When user invokes "/retronote clear {SECRET PASSWORD}"
     elif command_params[0] == 'clear':
-        #len(command_params) == 2 and command_params[0] == 'clear' and command_params[1] == clear_notes_pwd:
+        # len(command_params) == 2 and command_params[0] == 'clear' and command_params[1] == clear_notes_pwd:
         if len(command_params) == 1:
-            requests.post(response_url, json=view_templates.get_simple_message_view("Секретный пароль указать нужно :wink:"))
+            requests.post(response_url,
+                          json=view_templates.get_simple_message_view("Секретный пароль указать нужно :wink:"))
         if len(command_params) == 2 and command_params[1] != clear_notes_pwd:
-            requests.post(response_url, json=view_templates.get_simple_message_view("Секретный пароль у админа спросить нужно :wink:"))
+            requests.post(response_url, json=view_templates.get_simple_message_view(
+                "Секретный пароль у админа спросить нужно :wink:"))
         if len(command_params) == 2 and command_params[1] == clear_notes_pwd:
-            if is_file_exists(retro_file_name):
-                os.remove(retro_file_name)
-                requests.post(response_url, json=view_templates.get_simple_message_view("Зачистка произведена :wink:"))
-            else:
-                requests.post(response_url, json=view_templates.get_simple_message_view("Удалять нечего. Заметок ещё нет :eyes:"))
+            clear_retronotes(response_url, channel_id)
 
     ### When user invokes "/retronote download"
     elif len(command_params) == 1 and command_params[0] == 'download':
-        if is_file_exists(retro_file_name):
-            with open(retro_file_name, "r") as retrofile:
-                retronotes = retrofile.read()
-                sorted_retronotes = get_sorted_notes_string(retronotes)
-            upload_file_to_channel(channel_id, filetitle="retronotes.txt", filename="retronotes.txt", filetype="text", filecontent=sorted_retronotes)
-        else:
-            requests.post(response_url, json=view_templates.get_simple_message_view("Нечего скачивать. Заметок ещё нет :eyes:"))
+        download_retronotes(response_url, channel_id, format="txt")
 
     ### When user invokes "/retronote download csv"
     elif len(command_params) == 2 and command_params[0] == "download" and command_params[1] == "csv":
-        if is_file_exists(retro_file_name):
-            with open(retro_file_name, "r") as retrofile:
-                retronotes = retrofile.read()
-                csv_content = get_csv_file_content(retronotes)
-            upload_file_to_channel(channel_id, filetitle="retronotes.csv", filename="retronotes.csv", filetype="csv", filecontent=csv_content)
-        else:
-            requests.post(response_url, json=view_templates.get_simple_message_view("Нечего скачивать. Заметок ещё нет :eyes:"))
+        download_retronotes(response_url, channel_id, format="csv")
 
     ### Show main view when no params (keys) were used  with command or params were used in wrong format
     else:
-        requests.post(response_url, json=view_templates.get_main_view())
+        show_app_welcome_message(response_url)
 
     return ""
-
-
-def upload_file_to_channel(channel_id, filetitle, filename, filetype, filecontent):
-    data = {
-                "channels": channel_id,
-                "title": filetitle,
-                "initial_comment": "Файл со всеми созданными заметками для ретро готов к скачиванию",
-                "filename": filename,
-                "filetype": filetype,
-                "content": filecontent
-            }
-    requests.post('https://slack.com/api/files.upload', data=data,
-        headers={'Authorization': 'Bearer {}'.format(bot_access_token)})
 
 
 ### Method is invoked when any interactions with shortcuts, modals, or
 ### interactive components (such as buttons, select menus, and datepickers) happen
 @app.route('/slack/message_action/', methods=['POST'])
 def process_message_action():
-
     received_data = request.form.to_dict(flat=False)
     payload = json.loads(received_data['payload'][0])
-    received_token = payload["token"]
+    received_token = payload.get("token")
     response_url = payload.get("response_url")
 
     ### Debug method to view received payload
-    #requests.post(response_url, json=view_templates.get_simple_message_view("```{}```".format(payload)))
+    # requests.post(response_url, json=view_templates.get_simple_message_view("```{}```".format(payload)))
 
     if received_token != slack_token:
         return abort(400)
 
     ### When user submits modal with filled fields of retronote
     if payload["type"] == "view_submission":
-        return process_view_submission(payload)
+        return process_retronote_add_view_submission(payload)
 
     ### When user clicks "Help" in overflow menu
     if payload["type"] == "block_actions" and payload["actions"][0]["type"] == "overflow":
@@ -134,11 +103,11 @@ def process_message_action():
             trigger_id = payload["trigger_id"]
             show_add_retronote_modal(channel_id, trigger_id)
 
-         ### When user clicks "View notes" button in message
+        ### When user clicks "View notes" button in message
         if payload["actions"][0]["value"] == "view_notes":
             channel_id = payload["container"]["channel_id"]
             retro_file_name = rfm.get_retrofile_name(channel_id)
-            show_retronotes(response_url, retro_file_name)
+            show_retronotes(response_url, channel_id)
 
     ### When user clicks "Add as a retronote" shortcut
     if payload["type"] == "message_action" and payload["callback_id"] == "add_retronote_shortcut":
@@ -147,88 +116,11 @@ def process_message_action():
         trigger_id = payload["trigger_id"]
         show_add_retronote_modal(channel_id, trigger_id, initial_description=message_text)
 
-
     return ""
 
 
-### Method is used to receive slack event notifications
-# @app.route('/slack/event_action/', methods=['POST'])
-# def process_event_action():
-#     #received_data = request.form.to_dict(flat=False)
-
-#     ### Debug method to view received payload
-#     WEBHOOK_URL_MAX = 'https://hooks.slack.com/services/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'
-#     requests.post(WEBHOOK_URL_MAX, json=view_templates.get_simple_message_view("```{}```".format(request.form.to_dict())))
-#     challenge = "3eZbrw1aBm2rZgRNFdxV2595E9CY3gmdALWMmHkvFXO7tYXAYM8P"
-
-#     data = {
-#         "challenge": challenge
-#         }
-
-#     requests.post(json=data,
-#       headers={'Content-Type':'application/json; charset=UTF-8'})
-
-
-
-def show_add_retronote_modal(channel_id, trigger_id, initial_description=""):
-
-    initial_view = view_templates.get_retronote_add_initial_view(channel_id, initial_description)
-    data = {
-        "trigger_id": trigger_id,
-        "view": initial_view
-        }
-
-    requests.post('https://slack.com/api/views.open', json=data,
-      headers={'Content-Type':'application/json; charset=UTF-8',
-              'Authorization': 'Bearer {}'.format(bot_access_token)})
-
-
-def process_view_submission(payload):
-    state_values = payload["view"]["state"]["values"]
-    note_type_code = state_values["note_type_block"]["note_type"]["selected_option"]["value"]
-    note_text = state_values["note_description_block"]["note_description"]["value"]
-    private_metadata = payload["view"]["private_metadata"]
-    channel_id = private_metadata.split(":")[1]
-    retro_file_name = rfm.get_retrofile_name(channel_id)
-
-    note_type_text = ""
-    if note_type_code == "note_type_good":
-    	note_type_text = "Хорошо"
-    if note_type_code == "note_type_bad":
-    	note_type_text = "Плохо / нужно улучшить"
-
-    NOTE_DELIMITER = "***"
-
-    retronote = "\n\n"
-    retronote += NOTE_DELIMITER + "\n"
-    retronote += "Тип: {}".format(note_type_text) + "\n"
-    retronote += "Описание: {}".format(note_text) + "\n"
-    retronote += "Добавлена: {}".format(datetime.today().strftime('%d %b, %Y')) + "\n"
-    retronote += NOTE_DELIMITER
-
-    with open(retro_file_name, "a") as retrofile:
-        retrofile.write(retronote)
-
-    data = {
-        "channel": channel_id,
-        "text": "Добавлена заметка для ретро :eyes:"
-    }
-
-    requests.post('https://slack.com/api/chat.postMessage', json=data,
-      headers={'Content-Type':'application/json',
-              'Authorization': 'Bearer {}'.format(bot_access_token)})
-
-    return view_templates.get_retronote_add_confirm_view(retronote)
-
-
-def show_retronotes(response_url, retro_file_name):
-    if is_file_exists(retro_file_name):
-        with open(retro_file_name, "r") as retrofile:
-            retronotes = retrofile.read()
-            sorted_retronotes = get_sorted_notes_string(retronotes)
-        requests.post(response_url, json=view_templates.get_retronotes_list_view(sorted_retronotes))
-    else:
-        requests.post(response_url, json=view_templates.get_no_notes_view())
+def show_app_welcome_message(response_url):
+    requests.post(response_url, json=view_templates.get_main_view())
 
 
 def show_help(response_url):
@@ -239,19 +131,125 @@ def show_help(response_url):
         - `/retronote download {csv}` - скачать текстовый файл со всеми созданными заметками \n
         - `/retronote clear` - удалить все заметки _(опция доступна только админам)_ '''
 
-    requests.post(response_url, json=view_templates.get_simple_message_view(help_message, replace_original=False))
+    requests.post(response_url, json=view_templates.get_simple_message_view(help_message))
 
 
-def is_file_exists(filename):
-    try:
-        f = open(filename, 'r')
-        f.close()
-    except FileNotFoundError:
-        return False
-    return True
+### format can be "txt" or "csv"
+def download_retronotes(response_url, channel_id, format="txt"):
+    if not is_retronotes_exist(channel_id):
+        requests.post(response_url,
+                      json=view_templates.get_simple_message_view("Нечего скачивать. Заметок ещё нет :eyes:"))
+    else:
+        retronotes = get_retronotes(channel_id)
+        if format == "txt":
+            upload_file_to_channel(channel_id, filetitle="retronotes.txt", filename="retronotes.txt", filetype="text",
+                                   filecontent=get_sorted_notes_string(retronotes))
+        if format == "csv":
+            upload_file_to_channel(channel_id, filetitle="retronotes.csv", filename="retronotes.csv", filetype="csv",
+                                   filecontent=get_csv_file_content(retronotes))
 
 
-def get_notes_string(note_list_title, notes_list):
+def is_retronotes_exist(channel_id):
+    retro_file_name = rfm.get_retrofile_name(channel_id)
+    return rfm.is_file_exists(retro_file_name)
+
+
+def get_retronotes(channel_id):
+    retro_file_name = rfm.get_retrofile_name(channel_id)
+    return rfm.get_file_content(retro_file_name)
+
+
+def clear_retronotes(response_url, channel_id):
+    retro_file_name = rfm.get_retrofile_name(channel_id)
+    if rfm.remove_file(retro_file_name):
+        requests.post(response_url, json=view_templates.get_simple_message_view("Зачистка произведена :wink:"))
+    else:
+        requests.post(response_url,
+                      json=view_templates.get_simple_message_view("Удалять нечего. Заметок ещё нет :eyes:"))
+
+
+def upload_file_to_channel(channel_id, filetitle, filename, filetype, filecontent):
+    data = {
+        "channels": channel_id,
+        "title": filetitle,
+        "initial_comment": "Файл со всеми созданными заметками для ретро готов к скачиванию",
+        "filename": filename,
+        "filetype": filetype,
+        "content": filecontent
+    }
+    requests.post('https://slack.com/api/files.upload', data=data,
+                  headers={'Authorization': 'Bearer {}'.format(bot_access_token)})
+
+
+def show_add_retronote_modal(channel_id, trigger_id, initial_description=""):
+    initial_view = view_templates.get_retronote_add_initial_view(channel_id, initial_description)
+    data = {
+        "trigger_id": trigger_id,
+        "view": initial_view
+    }
+    requests.post('https://slack.com/api/views.open', json=data,
+                  headers={'Content-Type': 'application/json; charset=UTF-8',
+                           'Authorization': 'Bearer {}'.format(bot_access_token)})
+
+
+def process_retronote_add_view_submission(payload):
+    state_values = payload["view"]["state"]["values"]
+    note_type_code = state_values["note_type_block"]["note_type"]["selected_option"]["value"]
+    note_text = state_values["note_description_block"]["note_description"]["value"]
+    private_metadata = payload["view"]["private_metadata"]
+    channel_id = private_metadata.split(":")[1]
+
+    retronote = save_retronote(channel_id, note_type_code, note_text)
+    send_message_to_channel(channel_id, "Добавлена заметка для ретро :eyes:")
+    return view_templates.get_retronote_add_confirm_view(retronote)
+
+
+def send_message_to_channel(channel_id, message_text):
+    data = {
+        "channel": channel_id,
+        "text": message_text
+    }
+    requests.post('https://slack.com/api/chat.postMessage', json=data,
+                  headers={'Content-Type': 'application/json',
+                           'Authorization': 'Bearer {}'.format(bot_access_token)})
+
+
+def save_retronote(channel_id, note_type_code, note_text):
+    retro_file_name = rfm.get_retrofile_name(channel_id)
+    retronote_str = build_retronote_str(note_type_code, note_text)
+    retronote = rfm.add_content_to_file(retronote_str, retro_file_name)
+    return retronote
+
+
+def build_retronote_str(note_type_code, note_text):
+    note_type_text = ""
+    if note_type_code == "note_type_good":
+        note_type_text = "Хорошо"
+    if note_type_code == "note_type_bad":
+        note_type_text = "Плохо / нужно улучшить"
+
+    NOTE_DELIMITER = "***"
+
+    retronote_str = "\n\n"
+    retronote_str += NOTE_DELIMITER + "\n"
+    retronote_str += "Тип: {}".format(note_type_text) + "\n"
+    retronote_str += "Описание: {}".format(note_text) + "\n"
+    retronote_str += "Добавлена: {}".format(datetime.today().strftime('%d %b, %Y')) + "\n"
+    retronote_str += NOTE_DELIMITER
+
+    return retronote_str
+
+
+def show_retronotes(response_url, channel_id):
+    if is_retronotes_exist(channel_id):
+        retronotes = get_retronotes(channel_id)
+        sorted_retronotes = get_sorted_notes_string(retronotes)
+        requests.post(response_url, json=view_templates.get_retronotes_list_view(sorted_retronotes))
+    else:
+        requests.post(response_url, json=view_templates.get_no_notes_view())
+
+
+def __get_notes_string__(note_list_title, notes_list):
     if not notes_list:
         return ""
 
@@ -274,13 +272,13 @@ def get_sorted_notes_string(all_notes_string):
     good_notes = [note[12:] for note in notes if note.find("Тип: Хорошо") != -1]
     bad_notes = [note[28:] for note in notes if note.find("Тип: Плохо / нужно улучшить") != -1]
 
-    good_notes_str = get_notes_string("ЧТО БЫЛО ХОРОШО", good_notes)
-    bad_notes_str = get_notes_string("ЧТО БЫЛО ПЛОХО / НУЖНО УЛУЧШИТЬ", bad_notes)
+    good_notes_str = __get_notes_string__("ЧТО БЫЛО ХОРОШО", good_notes)
+    bad_notes_str = __get_notes_string__("ЧТО БЫЛО ПЛОХО / НУЖНО УЛУЧШИТЬ", bad_notes)
 
     return (good_notes_str + bad_notes_str).strip()
 
 
-def combine_lists(list1, list2, empty_position_str=""):
+def __combine_lists__(list1, list2, empty_position_str=""):
     list1_len = len(list1)
     list2_len = len(list2)
     combined_list = []
@@ -294,25 +292,24 @@ def combine_lists(list1, list2, empty_position_str=""):
     return combined_list
 
 
-def extract_and_clean_notes(list_of_notes):
+def __extract_and_clean_notes_for_csv__(list_of_notes):
     extracted_notes = [note[note.find("Описание:") + 10: note.find("Добавлена:") - 1] for note in list_of_notes]
     cleaned_notes = [note.replace("\n", "; ") for note in extracted_notes]
     cleaned_notes = [note.replace(",", ";") for note in cleaned_notes]
     return cleaned_notes
 
 
-def get_csv_file_content(text, csv_delimiter=","):
-    notes = text.split("***")
+def get_csv_file_content(retronotes_text, csv_delimiter=","):
+    notes = retronotes_text.split("***")
 
     good_notes = [note[12:] for note in notes if note.find("Тип: Хорошо") != -1]
     bad_notes = [note[28:] for note in notes if note.find("Тип: Плохо / нужно улучшить") != -1]
 
-    clean_good_notes = extract_and_clean_notes(good_notes)
-    clean_bad_notes = extract_and_clean_notes(bad_notes)
+    clean_good_notes = __extract_and_clean_notes_for_csv__(good_notes)
+    clean_bad_notes = __extract_and_clean_notes_for_csv__(bad_notes)
 
-    combined_notes = combine_lists(clean_good_notes, clean_bad_notes)
+    combined_notes = __combine_lists__(clean_good_notes, clean_bad_notes)
     csv_content_str = "good notes,bad notes" + "\n"
     for good_note, bad_note in combined_notes:
         csv_content_str += "{}{}{}".format(good_note, csv_delimiter, bad_note) + "\n"
     return csv_content_str.strip()
-
